@@ -134,7 +134,7 @@ class QuantumSpace(UniqueRepresentation):
     @cached_method
     def tensor(self,other):
         print "Creating tensor product space"
-        assert(isinstance(other,QuantumSpace))
+        assert(isinstance(other,QuantumSpace)), "QuantumSpace.tensor: "+str(other)+" not of type QuantumSpace"
         if not set(self._spaces_dict.keys()).isdisjoint(other._spaces_dict.keys()):
             raise ValueError("Tensor product of spaces with non-disjoint registers attempted")
         prod = QuantumSpace(QuantumHelpers.magicsort(self._spaces + other._spaces))
@@ -253,8 +253,13 @@ class QuantumVector(ModuleElement):
         return self/self.norm()
     def substitute(self,map):
         raise NotImplemented("QuantumOperator.substitute")
-    
-        
+    def __eq__(self,other):
+        if not isinstance(other,QuantumVector): return False
+        if other.parent() != self.parent(): return False
+        return self.vector() == other.vector()
+    def __ne__(self,other):
+        return not (self==other)
+
 
 class QuantumVectorSpace(sage.structure.parent.Parent,UniqueRepresentation):
     """QuantumVectorSpace(F,Q) -- A complex vector space over field K and with the canonical basis associated with QuantumSpace Q"""
@@ -373,6 +378,9 @@ class QuantumVectorSpace(sage.structure.parent.Parent,UniqueRepresentation):
         assert G.nrows() == dim
         assert G.ncols() == n
         return [self(v).normalize() for v in G.columns()]
+    @staticmethod
+    def make(K,spaces):
+        return QuantumVectorSpace(K,QuantumSpace.make(spaces))
 
 
 class QuantumOperator(ModuleElement):
@@ -552,10 +560,10 @@ class QuantumOperator(ModuleElement):
         Returns o=self.tensor(identity) for a suitably large identity (such that o is in op_space).
         Requires that op_space adds the same registers to domain/codomain of self.parent().
         """
-        assert isinstance(op_space,QuantumOperatorSpace)
+        assert isinstance(op_space,QuantumOperatorSpace), "QuantumOperator.extend: "+str(op_space)+" not of type QuantumOperatorSpace"
         parent = self.parent()
-        assert parent.domain().isSubspace(op_space.domain())
-        assert parent.codomain().isSubspace(op_space.codomain())
+        assert parent.domain().isSubspace(op_space.domain()), "QuantumOperator.extend: domain "+str(parent.domain())+" not a subspace of "+str(op_space.domain())
+        assert parent.codomain().isSubspace(op_space.codomain()), "QuantumOperator.extend: codomain "+str(parent.codomain())+" not a subspace of "+str(op_space.codomain())
         extra = op_space.domain().difference(parent.domain())
         assert extra == op_space.codomain().difference(parent.codomain())
         identity_ops = QuantumOperatorSpace(parent.base(),extra,extra)
@@ -568,6 +576,12 @@ class QuantumOperator(ModuleElement):
         return sum(abs(x) for x in self.eigenvalues())
     def trace_distance(self,other):
         return (self-other).trace_norm()/2
+    def __eq__(self,other):
+        if not isinstance(other,QuantumOperator): return False
+        if other.parent() != self.parent(): return False
+        return self.matrix() == other.matrix()
+    def __ne__(self,other):
+        return not (self==other)
 
 class QuantumOperatorSpace(sage.structure.parent.Parent,UniqueRepresentation):
     """QuantumOperatorSpace(F,Q) -- Space of linear operators on QuantumVectorSpace(F,Q)"""
@@ -647,7 +661,7 @@ class QuantumOperatorSpace(sage.structure.parent.Parent,UniqueRepresentation):
     def generic_sdp(self,sdp_var):
         rows = self.codomain().dimension()
         cols = self.domain().dimension()
-        M = sum(matrix(RR,rows,cols,{(i,j):1}) * rho_var[i,j] for i in range(cols) for j in range(rows))
+        M = sum(matrix(RR,rows,cols,{(i,j):1}) * sdp_var[i,j] for i in range(cols) for j in range(rows))
         return M # Can't return self(M) because M does not lie in MatrixSpace(something), but instead has a strange parent
     def genericPositiveSemidefinite(self):
         assert self.base()==SR
