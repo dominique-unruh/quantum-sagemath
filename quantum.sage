@@ -4,16 +4,17 @@ from sage.structure.element import ModuleElement
 class QuantumHelpers:
     freshvarcounter = 0
     @staticmethod
-    def freshVar():
+    def freshVar(assm=False):
         QuantumHelpers.freshvarcounter += 1
         v = SR.symbol("t_{}".format(QuantumHelpers.freshvarcounter))
-        assume(v,'complex')
+        #print("Assume",v,"complex")
+        if assm: assume(v,'complex') # TODO: Is very slow. Why?
         return v
     @staticmethod
-    def freshRealVar():
+    def freshRealVar(assm=False):
         QuantumHelpers.freshvarcounter += 1
         v = SR.symbol("u_{}".format(QuantumHelpers.freshvarcounter))
-        assume(v,'real')
+        if assm: assume(v,'real')
         return v
     @staticmethod
     def magicsort(tup):
