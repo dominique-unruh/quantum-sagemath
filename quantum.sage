@@ -1,6 +1,64 @@
 import itertools
 from sage.structure.element import ModuleElement
 
+class SDPModel():
+    import mosek.fusion
+    def __init__(self):
+        self.model = mosek.fusion.Model()
+        self.vars = dict()
+    def show_stats(self):
+        print("{} variables, {} constraints".format(self.model.numVariables(),self.model.numConstraints()))
+    def psdMatrix(self,name,dim): # Real matrix
+        dim = int(dim)
+        vars = SR.var(name,n=dim*dim,domain='real')
+        mosekVar = self.model.variable(name,mosek.fusion.Domain.inPSDCone(dim))
+        for i in xrange(dim):
+            for j in xrange(dim):
+                v = vars[j+dim*i]
+                assert v not in self.vars
+                self.vars[v] = mosekVar.index(i,j)
+        return matrix([[vars[j+dim*i] for j in xrange(dim)] for i in xrange(dim)])
+    def solve(self):
+        self.model.solve()
+        self.solution = dict((k,v.level()[0]) for k,v in self.vars.items())
+    def sr2mosek(self,e):
+        vars = self.vars
+        from mosek.fusion import Expr
+        def s2m(e):
+                if e.is_symbol():
+                    return Expr.mul(int(1),vars[e])
+                elif e.operator() == sage.symbolic.operators.add_vararg:
+                    return Expr.add([s2m(x) for x in e.operands()])
+                elif e.operator() == sage.symbolic.operators.mul_vararg:
+                    x,y = e.operands()
+                    if x.is_numeric():
+                        assert x.is_real()
+                        return Expr.mul(float(x),s2m(y))
+                    if y.is_numeric():
+                        assert y.is_real()
+                        return Expr.mul(float(y),s2m(x))
+                    raise Exception("Unsupported: multiplication of two expressions: "+str(e))
+                elif e.is_numeric():
+                    assert e.is_real()
+                    return Expr.constTerm(float(e))
+                raise Exception("Unsupported expression: "+str(e))
+        return s2m(e)
+    def addConstraint(self,e,name=None):
+        from mosek.fusion import Domain
+
+        if isinstance(e,(list,tuple,set)):
+            assert name is None
+            return [self.addConstraint(e2) for e2 in e]
+        
+        if e.is_relational():
+            x,y = e.operands()
+            if e.operator() == operator.le:
+                return self.model.constraint(name, self.sr2mosek(y-x), Domain.greaterThan(int(0)))
+            if e.operator() == operator.eq:
+                return self.model.constraint(name, self.sr2mosek(y-x), Domain.equalsTo(int(0)))
+        return self.model.constraint(name, self.sr2mosek(e), Domain.equalsTo(int(0)))
+
+    
 class QuantumHelpers:
     freshvarcounter = 0
     @staticmethod
