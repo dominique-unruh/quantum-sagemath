@@ -1,3 +1,5 @@
+# -*- mode: python; -*-
+
 import itertools
 from sage.structure.element import ModuleElement
 
@@ -10,7 +12,7 @@ class SDPModel():
         print("{} variables, {} constraints".format(self.model.numVariables(),self.model.numConstraints()))
     def psdMatrix(self,name,dim): # Real matrix
         dim = int(dim)
-        vars = SR.var(name,n=dim*dim,domain='real')
+        vars = SR.var(name,n=dim*dim)
         mosekVar = self.model.variable(name,mosek.fusion.Domain.inPSDCone(dim))
         for i in xrange(dim):
             for j in xrange(dim):
@@ -76,13 +78,27 @@ class QuantumHelpers:
         return v
     @staticmethod
     def magicsort(tup):
-        """Returns a reordered copy of the tup. It is guaranteed that two invocations magicsort(l1),magicsort(l2) return the same tup if l1,l2 are equal as multisets."""
+        """Returns a reordered copy of the tup. 
+           It is guaranteed that two invocations magicsort(l1),magicsort(l2) 
+           return the same tup if l1,l2 are equal as multisets."""
         return tuple(sorted(tup))
     @staticmethod
     def isMagicSorted(tup):
         """Checks whether magicsort(tup)==tup"""
         tup = tuple(tup)
         return QuantumHelpers.magicsort(tup)==tup
+    @staticmethod
+    def make_exact(base):
+        if base in (CDF,RDF):
+            return lambda x: base(x)
+        elif base in (SR,QQ,QQbar):
+            #if real:
+                return lambda x: base(QQ(x))
+            #else:
+            #    return lambda x: QQ(x.real()) + QQ(x.imag()) * I
+
+        raise Exception("Unsupported ring in make_exact: "+str(base))
+
 
 class QuantumSpace(UniqueRepresentation):
     """A representation of a quantum system with named registers.
@@ -137,7 +153,6 @@ class QuantumSpace(UniqueRepresentation):
         """
         spaces = self._spaces_dict.copy()
         for n,b in other._spaces:
-            #print("XXX {} {} {}")
             b2 = spaces.get(n)
             if b2 is not None:
                 if b!=b2: raise RuntimeError("Register {} has different bases {} vs {}".format(n,b2,b))
@@ -190,19 +205,46 @@ class QuantumSpace(UniqueRepresentation):
     def __str__(self):
         return "QuantumSpace({})".format(self.short_description())
     def __repr__(self): return self.__str__()
-    @cached_method
     def tensor(self,other):
+        return self.tensor_and_maps(other)[0]
+    @cached_method
+    def tensor_and_maps(self,other):
+        """Like tensor(self,other), but additionally provides morphisms from 
+        the product space back to self and other.
+
+        Returns:
+        prod - the tensor product space
+        morph1 - morphism from space to self
+        morph2 - morphism from space to other
+        """
+
         print "Creating tensor product space"
         assert(isinstance(other,QuantumSpace)), "QuantumSpace.tensor: "+str(other)+" not of type QuantumSpace"
         if not set(self._spaces_dict.keys()).isdisjoint(other._spaces_dict.keys()):
             raise ValueError("Tensor product of spaces with non-disjoint registers attempted")
         prod = QuantumSpace(QuantumHelpers.magicsort(self._spaces + other._spaces))
-        return prod
-    @cached_method
+        _,morph1 = prod.remove_and_maps(other.registerNames())
+        _,morph2 = prod.remove_and_maps(self.registerNames())
+        return (prod,morph1,morph2)
     def remove(self,remove):
+        return self.remove_and_maps(remove)[0]
+    @cached_method
+    def remove_and_maps(self,remove):
+        """Like remove, but additionally returns morphisms from the original 
+        space to the one after removal. (E.g., |xyz>_ABC might be mapped to |xy>_AB.).
+
+        Returns:
+        space - the smaller QuantumSpace
+        morph - a QuantumBasisMap from self to space
+        """
         if isinstance(remove,str): remove = (remove,)
         for i in remove: assert i in self._spaces_dict, i
-        return QuantumSpace(tuple((n,i) for (n,i) in self._spaces if n not in remove))
+        def filter(x):
+            return tuple((n,i) for (n,i) in x if n not in remove)
+        newSpace = QuantumSpace(filter(self._spaces))
+        m = tuple((b,filter(b)) for b in self.basis())
+        morph = QuantumBasisMap(self,newSpace,m)
+        return (newSpace,morph)
     def renameRegisters(self,f):
         """Creates a new QuantumSpace, with registers renamed according to f.
            f can be a function or a dictionary.
@@ -212,29 +254,48 @@ class QuantumSpace(UniqueRepresentation):
                     m2 - The morphism from qs to self
         """
         f2 = (lambda n: f.get(n,n)) if isinstance(f,dict) else f
-        qs = QuantumSpace(tuple((f2(n),a) for n,a in self._spaces))
+        qs = QuantumSpace(QuantumHelpers.magicsort(tuple((f2(n),a) for n,a in self._spaces)))
         fdict = tuple((n, f2(n)) for n,a in self._spaces)
         finv = tuple((f2(n), n) for n,a in self._spaces)
 
-        m1 = QuantumSpaceMorphism(self,qs,fdict)
-        m2 = QuantumSpaceMorphism(qs,self,finv)
+        m1 = QuantumRegisterMap(self,qs,fdict)
+        m2 = QuantumRegisterMap(qs,self,finv)
         return (qs,m1,m2)
+    def registerNames(self):
+        return tuple(n for n,a in self._spaces)
 
-class QuantumSpaceMorphism(UniqueRepresentation):
+class QuantumRegisterMap(UniqueRepresentation):
     def __init__(self,src,target,nameMap):
         self._nameMap = dict(nameMap)
         self._src = src
         self._target = target
+#        self._indexMap = dict((src.basis_to_idx(b), target.basis_to_idx(self(b)))
+#                              for b in self._src.basis())
     def __call__(self,elem):
         m = self._nameMap
-        return tuple((m[n],x) for n,x in elem)
+        return QuantumHelpers.magicsort(tuple((m[n],x) for n,x in elem))
     def operator(self,base):
         space = QuantumOperatorSpace(base,self._src,self._target)
-        map = [(self._target.basis_to_idx(self(b)), self._src.basis_to_idx(b)) for b in self._src.basis()]
-        print(map)
+        map = [(self._target.basis_to_idx(self(b)), self._src.basis_to_idx(b))
+               for b in self._src.basis()]
+        #print("MAP",map)
         m = matrix(SR,self._src.dimension(),self._target.dimension(),dict((ij,1) for ij in map))
-        print(m)
+        #print(m)
         return space(m)
+
+
+class QuantumBasisMap(UniqueRepresentation):
+    def __init__(self,src,target,basisMap):
+        self._basisMap = dict(basisMap)
+        self._src = src
+        self._target = target
+        self._indexMap = dict((src.basis_to_idx(b), target.basis_to_idx(self(b)))
+                              for b in self._src.basis())
+    def __call__(self,elem):
+        return self._basisMap[elem]
+    def map_index(self,index):
+        return self._indexMap[index]
+
 
 EmptyQuantumSpace = QuantumSpace(tuple())
 
@@ -298,6 +359,7 @@ class QuantumVector(ModuleElement):
         m2 = matrix(self._vector).transpose()
         return opspace(m2*m1)
     def tensor(self,other):
+        raise Exception("Wrong implementation: needs to take into account basis reordering")
         parent = self.parent().tensor(other.parent())
         v1 = self.vector()
         v2 = other.vector()
@@ -357,15 +419,18 @@ class QuantumVectorSpace(sage.structure.parent.Parent,UniqueRepresentation):
     def space(self): return self._space
     def base(self): return self._vector_parent.base()
     #def _indices(self): nyi()
-    @cached_method
     def tensor(self,other):
+        return self.tensor_and_maps(other)[0]
+    @cached_method
+    def tensor_and_maps(self,other):
         print "Creating tensor vector product space:", self, other
         if self.base() != other.base():
             raise TypeError("Tensor product of vector spaces with different bases")
         if not isinstance(self,QuantumVectorSpace):
             raise TypeError("Second argument of tensor product must be a QuantumVectorSpace, too")
-        vs = QuantumVectorSpace(self.base(),self.space().tensor(other.space()))
-        return vs
+        prod,m1,m2 = self.space().tensor_and_maps(other.space())
+        vs = QuantumVectorSpace(self.base(), prod)
+        return (vs, m1, m2)
     def __repr__(self):
         return "QuantumVectorSpace({})".format(self.space().short_description())
     def __str__(self):
@@ -380,20 +445,28 @@ class QuantumVectorSpace(sage.structure.parent.Parent,UniqueRepresentation):
         while vec==0:
             vec = random_vector(ring=base, degree=dim, bound=100)
         return self(vec)
-    def random_unit(self):
-        """Returns a random vector of length 1 (Haar measure)"""
+    def random_unit(self,real=False,skip_normalize=False):
+        """Returns a random vector of length 1 (Haar measure).
+        If real=True, returns a real-valued vector."""
         # TODO: could use sage.probability.probability_distribution.SphericalDistribution
         dim = self.dimension()
         gauss = RealDistribution('gaussian', 1)
-        vec = self([complex(gauss.get_random_element(),gauss.get_random_element()) for i in range(dim)])
-        return vec.normalize()
-    def random_unit_real(self):
-        """Returns a random real vector of length 1 (Haar measure)"""
-        # TODO: sage.probability.probability_distribution.SphericalDistribution
-        dim = self.dimension()
-        gauss = RealDistribution('gaussian', 1)
-        vec = self([gauss.get_random_element() for i in range(dim)])
-        return vec.normalize()
+
+        print("BASE",self.base())
+        mk_qq = QuantumHelpers.make_exact(self.base())
+        
+        if real:
+            vec = self([mk_qq(gauss.get_random_element()) for i in xrange(dim)])
+        else:
+            vec = self([mk_qq(gauss.get_random_element())+mk_qq(gauss.get_random_element())*I for i in xrange(dim)])
+        return vec if skip_normalize else vec.normalize()
+    # def random_unit_real(self):
+    #     """Returns a random real vector of length 1 (Haar measure)"""
+    #     # TODO: sage.probability.probability_distribution.SphericalDistribution
+    #     dim = self.dimension()
+    #     gauss = RealDistribution('gaussian', 1)
+    #     vec = self([gauss.get_random_element() for i in range(dim)])
+    #     return vec.normalize()
     def generic(self):
         assert self.base()==SR
         dim = self.dimension()
@@ -407,36 +480,31 @@ class QuantumVectorSpace(sage.structure.parent.Parent,UniqueRepresentation):
             raise TypeError("Hadamard only supported for two-dimensional vector spaces")
         space = self.space()
         return QuantumOperatorSpace(self.base(),space,space).hadamard()
-    def random_orthonormal_set(self,n):
-        if self.base()==CDF:
-            mk_qq = lambda x: x
-        else:
-            mk_qq = lambda x: QQ(x.real())+QQ(x.imag())*I
-        
+    def random_orthonormal_set(self,n,real=False):
         dim = self.dimension()
         if n > dim:
             raise TypeError("Cannot construct more orthonormal vectors than dimension")
-        vectors = [[mk_qq(x) for x in self.random_unit().vector()] for i in range(n)]
+        vectors = [self.random_unit(real=real).vector() for i in range(n)]
         vec_matrix = matrix(self.base(),vectors)
         G, M = vec_matrix.transpose()._gram_schmidt_noscale()
         assert G.nrows() == dim
         assert G.ncols() == n
         return [self(v).normalize() for v in G.columns()]
-    def random_orthonormal_set_real(self,n):
-        if self.base()==CDF or self.base()==RDF:
-            mk_qq = lambda x: x
-        else:
-            mk_qq = lambda x: QQ(x.real())
+    # def random_orthonormal_set_real(self,n):
+    #     if self.base()==CDF or self.base()==RDF:
+    #         mk_qq = lambda x: x
+    #     else:
+    #         mk_qq = lambda x: QQ(x.real())
         
-        dim = self.dimension()
-        if n > dim:
-            raise TypeError("Cannot construct more orthonormal vectors than dimension")
-        vectors = [[mk_qq(x) for x in self.random_unit_real().vector()] for i in range(n)]
-        vec_matrix = matrix(self.base(),vectors)
-        G, M = vec_matrix.transpose()._gram_schmidt_noscale()
-        assert G.nrows() == dim
-        assert G.ncols() == n
-        return [self(v).normalize() for v in G.columns()]
+    #     dim = self.dimension()
+    #     if n > dim:
+    #         raise TypeError("Cannot construct more orthonormal vectors than dimension")
+    #     vectors = [[mk_qq(x) for x in self.random_unit_real().vector()] for i in range(n)]
+    #     vec_matrix = matrix(self.base(),vectors)
+    #     G, M = vec_matrix.transpose()._gram_schmidt_noscale()
+    #     assert G.nrows() == dim
+    #     assert G.ncols() == n
+    #     return [self(v).normalize() for v in G.columns()]
     @staticmethod
     def make(K,spaces):
         return QuantumVectorSpace(K,QuantumSpace.make(spaces))
@@ -523,13 +591,13 @@ class QuantumOperator(ModuleElement):
         assert self.parent().base() == x.parent().base(), (self.parent().base(), x.parent().base())
         vs = QuantumVectorSpace(self.parent().base(), self.parent().codomain())
         return vs(self._matrix * x._vector)
-    def equations(self): # Returns a set of equations over the base field, equivalent to self==0
+    def equations(self, dont_filter=False): # Returns a set of equations over the base field, equivalent to self==0
         eqs = []
         m = self._matrix
         for i in range(m.nrows()):
             for j in range(m.ncols()):
                 x = m[i,j]
-                if x==0: continue
+                if (not dont_filter) and x==0: continue
                 eqs.append(x)
         return eqs
     def isHermiteanEqs(self):
@@ -564,17 +632,26 @@ class QuantumOperator(ModuleElement):
             else: eqs.append(simplify(det) >= 0)
         return eqs
     def tensor(self,other):
-        parent = self.parent().tensor(other.parent())
+        parent,dm1,dm2,cm1,cm2 = self.parent().tensor_and_maps(other.parent())
         m1 = self.matrix()
         m2 = other.matrix()
-        m = []
-        for row1 in m1:
-            for row2 in m2:
-                row = []
-                for x in row1:
-                    for y in row2:
-                        row.append(x*y)
-                m.append(row)
+        ddim = parent.domain().dimension()
+        cdim = parent.codomain().dimension()
+        m = matrix(parent.base(), cdim, ddim)
+        for row in xrange(cdim):
+            row1 = cm1.map_index(row)
+            row2 = cm2.map_index(row)
+            for col in xrange(ddim):
+                col1 = dm1.map_index(col)
+                col2 = dm2.map_index(col)
+                m[row,col] = m1[row1,col1] * m2[row2,col2]
+        # for row1 in m1:
+        #     for row2 in m2:
+        #         row = []
+        #         for x in row1:
+        #             for y in row2:
+        #                 row.append(x*y)
+        #         m.append(row)
         return parent(m)
     def trace(self):
         parent = self.parent()
@@ -641,14 +718,39 @@ class QuantumOperator(ModuleElement):
         return self.matrix() == other.matrix()
     def __ne__(self,other):
         return not (self==other)
+    def kernel_orthogonal_basis(self):
+        """Returns an orthogonal basis of the right kernel of this operator.
+        Only works if all entries can be cast to QQbar (no symbolic entries)"""
+        M = matrix(QQbar,self.matrix())
+        B = list(M.right_kernel().matrix().gram_schmidt()[0])
+        dom = self.parent().domain_vs()
+        return [dom(b) for b in B]
+    def kernel_onb(self):
+        """Returns an orthonormal basis of the right kernel of this operator.
+        Only works if all entries can be cast to QQbar (no symbolic entries)"""
+        return [b.normalize() for b in self.kernel_orthogonal_basis()]
+    def kernel_projector(self):
+        """Returns a projector onto the right kernel of this operator."""
+        return sum(b.density_op() for b in self.kernel_onb())
+    def subs(self,in_dict=None,**kwds):
+        return self.parent()(self.matrix().subs(in_dict,**kwds))
+    def map(self,f):
+        M = [[f(x) for x in row] for row in self.matrix()]
+        return self.parent()(M)
+    def numerical_approx(self, prec=None, digits=None, algorithm=None):
+        M = self.matrix().n(prec,digits,algorithm)
+        parent = self.parent()
+        space = QuantumOperatorSpace(M.parent().base(), parent.domain(), parent.codomain())
+        return space(M)
+    
 
 class QuantumOperatorSpace(sage.structure.parent.Parent,UniqueRepresentation):
     """QuantumOperatorSpace(F,Q) -- Space of linear operators on QuantumVectorSpace(F,Q)"""
     Element = QuantumOperator
-    def __init__(self,K,domain,codomain):
-        assert isinstance(domain,QuantumSpace)
+    def __init__(self, K, domain, codomain):
+        if not isinstance(domain,QuantumSpace): raise TypeError("domain is not a quantum space ({} is a {})".format(domain,type(domain)))
         if not isinstance(codomain,QuantumSpace): raise TypeError("codomain is not a quantum space ({} is a {})".format(codomain,type(codomain)))
-        assert isinstance(codomain,QuantumSpace)
+
         self._domain = domain
         self._codomain = codomain
         self._field = K
@@ -702,15 +804,19 @@ class QuantumOperatorSpace(sage.structure.parent.Parent,UniqueRepresentation):
             and self.domain() == S.space() \
             and self.base() == S.base():
                 return QuantumOperatorSpace.MulVecAction(self,S)
-    @cached_method
     def tensor(self,other):
+        return self.tensor_and_maps(other)[0]
+    @cached_method
+    def tensor_and_maps(self,other):
         print "Creating tensor operator product space:", self, other
         if self.base() != other.base():
             raise TypeError("Tensor product of operator spaces over different fields")
         if not isinstance(other,QuantumOperatorSpace):
             raise TypeError("Second argument of tensor product must be a QuantumOperatorSpace, too")
-        os = QuantumOperatorSpace(self.base(),self.domain().tensor(other.domain()), self.codomain().tensor(other.codomain()))
-        return os
+        domprod,dm1,dm2 = self.domain().tensor_and_maps(other.domain())
+        codomprod,cm1,cm2 = self.codomain().tensor_and_maps(other.codomain())
+        os = QuantumOperatorSpace(self.base(), domprod, codomprod)
+        return (os,dm1,dm2,cm1,cm2)
     def generic(self):
         assert self.base()==SR
         rows = self.codomain().dimension()
@@ -729,6 +835,15 @@ class QuantumOperatorSpace(sage.structure.parent.Parent,UniqueRepresentation):
         op = self.generic()
         return op.adjoint() * op
         #return sum( self.domain_vs().generic().density_op() for i in range(dim) )
+    def sdpPositiveSemidefiniteReal(self,model,name):
+        """Creates an operator backed up by a variable in the SDPModel model.
+        The operator is assumed to be >=0 and real."""
+        assert isinstance(model,SDPModel)
+        assert self.base()==SR
+        assert self.domain()==self.codomain()
+        dim = self.domain().dimension()
+        M = model.psdMatrix(name,dim)
+        return self(M)
     def genericHermitean(self):
         assert self.base()==SR
         assert self.domain()==self.codomain()
@@ -755,21 +870,35 @@ class QuantumOperatorSpace(sage.structure.parent.Parent,UniqueRepresentation):
         if self.codomain().dimension()!=2:
             raise TypeError("Hadamard only supported for two-dimensional vector spaces")
         return self([[1/sqrt(2),1/sqrt(2)],[1/sqrt(2),-1/sqrt(2)]])
-    def random_isometry(self):
+    def random_isometry(self,real=False):
+        """Returns a uniformly random isometry (Haar measure).
+        If real=True, a real-valued isometry is chosen."""
         dim1 = self.domain().dimension()
         dim2 = self.codomain().dimension()
         codomain_vs = self.codomain_vs()
         if dim1 > dim2:
             raise TypeError("Cannot construct isometries for operator spaces with domain larger than codomain")
-        vectors = codomain_vs.random_orthonormal_set(dim1)
+        vectors = codomain_vs.random_orthonormal_set(dim1,real=real)
         U = matrix([v.vector() for v in vectors]).transpose()
         return self(U)
-    def random_isometry_real(self):
+    def random_projector(self,rank,real=False):
+        assert rank >= 0
         dim1 = self.domain().dimension()
         dim2 = self.codomain().dimension()
-        codomain_vs = self.codomain_vs()
-        if dim1 > dim2:
-            raise TypeError("Cannot construct isometries for operator spaces with domain larger than codomain")
-        vectors = codomain_vs.random_orthonormal_set_real(dim1)
-        U = matrix([v.vector() for v in vectors]).transpose()
-        return self(U)
+        assert dim1 == dim2
+        assert rank <= dim1
+        base = self.base()
+        
+        U = self.random_isometry(real=real)
+        P = self(matrix.diagonal(base, [1 if i<rank else 0 for i in xrange(dim1)]))
+
+        return U*P*U.adjoint()
+    # def random_isometry_real(self):
+    #     dim1 = self.domain().dimension()
+    #     dim2 = self.codomain().dimension()
+    #     codomain_vs = self.codomain_vs()
+    #     if dim1 > dim2:
+    #         raise TypeError("Cannot construct isometries for operator spaces with domain larger than codomain")
+    #     vectors = codomain_vs.random_orthonormal_set_real(dim1)
+    #     U = matrix([v.vector() for v in vectors]).transpose()
+    #     return self(U)
