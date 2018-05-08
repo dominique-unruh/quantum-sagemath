@@ -22,7 +22,15 @@ class SDPModel():
         return matrix([[vars[j+dim*i] for j in xrange(dim)] for i in xrange(dim)])
     def solve(self):
         self.model.solve()
-        self.solution = dict((k,v.level()[0]) for k,v in self.vars.items())
+    @cached_method
+    def solution(self):
+        return dict((k,v.level()[0]) for k,v in self.vars.items())
+    def show_solution_info(self):
+        print("problem status: {}".format(self.model.getProblemStatus()))
+        print("solution status: {}".format(self.model.getSolutionStatus()))
+        print("primal objective: {}".format(self.model.primalObjValue()))
+        print("dual objective: {}".format(self.model.dualObjValue()))
+        print(self.model.getProblemStatus())
     def sr2mosek(self,e):
         vars = self.vars
         from mosek.fusion import Expr
@@ -452,7 +460,7 @@ class QuantumVectorSpace(sage.structure.parent.Parent,UniqueRepresentation):
         dim = self.dimension()
         gauss = RealDistribution('gaussian', 1)
 
-        print("BASE",self.base())
+        #print("BASE",self.base())
         mk_qq = QuantumHelpers.make_exact(self.base())
         
         if real:
@@ -720,8 +728,9 @@ class QuantumOperator(ModuleElement):
         return not (self==other)
     def kernel_orthogonal_basis(self):
         """Returns an orthogonal basis of the right kernel of this operator.
-        Only works if all entries can be cast to QQbar (no symbolic entries)"""
-        M = matrix(QQbar,self.matrix())
+        In case of base ring SR, it only works if all entries can be cast to QQbar (no symbolic entries)"""
+        M = self.matrix()
+        if self.parent().base()==SR: M = matrix(QQbar,M)
         B = list(M.right_kernel().matrix().gram_schmidt()[0])
         dom = self.parent().domain_vs()
         return [dom(b) for b in B]
@@ -742,6 +751,8 @@ class QuantumOperator(ModuleElement):
         parent = self.parent()
         space = QuantumOperatorSpace(M.parent().base(), parent.domain(), parent.codomain())
         return space(M)
+    def change_base(self, base):
+        return QuantumOperator(self.parent().change_base(base), matrix(base, self.matrix()))
     
 
 class QuantumOperatorSpace(sage.structure.parent.Parent,UniqueRepresentation):
@@ -839,11 +850,10 @@ class QuantumOperatorSpace(sage.structure.parent.Parent,UniqueRepresentation):
         """Creates an operator backed up by a variable in the SDPModel model.
         The operator is assumed to be >=0 and real."""
         assert isinstance(model,SDPModel)
-        assert self.base()==SR
         assert self.domain()==self.codomain()
         dim = self.domain().dimension()
         M = model.psdMatrix(name,dim)
-        return self(M)
+        return self.change_base(SR)(M)
     def genericHermitean(self):
         assert self.base()==SR
         assert self.domain()==self.codomain()
@@ -902,3 +912,5 @@ class QuantumOperatorSpace(sage.structure.parent.Parent,UniqueRepresentation):
     #     vectors = codomain_vs.random_orthonormal_set_real(dim1)
     #     U = matrix([v.vector() for v in vectors]).transpose()
     #     return self(U)
+    def change_base(self, base):
+        return QuantumOperatorSpace(base, self.domain(), self.codomain())
