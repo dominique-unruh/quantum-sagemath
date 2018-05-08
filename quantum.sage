@@ -26,8 +26,9 @@ class SDPModel():
     def solution(self):
         return dict((k,v.level()[0]) for k,v in self.vars.items())
     def show_solution_info(self):
-        print("problem status: {}".format(self.model.getProblemStatus()))
-        print("solution status: {}".format(self.model.getSolutionStatus()))
+        print("problem status: {}".format(self.model.getProblemStatus(mosek.fusion.SolutionType.Default)))
+        print("primal solution status: {}".format(self.model.getPrimalSolutionStatus()))
+        print("dual solution status: {}".format(self.model.getDualSolutionStatus()))
         print("primal objective: {}".format(self.model.primalObjValue()))
         print("dual objective: {}".format(self.model.dualObjValue()))
         print(self.model.getProblemStatus())
