@@ -1,6 +1,6 @@
 # -*- mode: python; -*-
 
-import itertools
+import itertools, types, gc
 from sage.structure.element import ModuleElement
 
 class SDPModel():
@@ -31,7 +31,6 @@ class SDPModel():
         print("dual solution status: {}".format(self.model.getDualSolutionStatus()))
         print("primal objective: {}".format(self.model.primalObjValue()))
         print("dual objective: {}".format(self.model.dualObjValue()))
-        print(self.model.getProblemStatus())
     def sr2mosek(self,e):
         vars = self.vars
         from mosek.fusion import Expr
@@ -57,9 +56,18 @@ class SDPModel():
     def addConstraint(self,e,name=None):
         from mosek.fusion import Domain
 
-        if isinstance(e,(list,tuple,set)):
+        #print("E",type(e),isinstance(e,types.GeneratorType))
+        if isinstance(e,(list,tuple,set,types.GeneratorType)):
             assert name is None
-            return [self.addConstraint(e2) for e2 in e]
+            count = 0
+            for e2 in e:
+                self.addConstraint(e2)
+                count += 1
+                if count % 1000 == 0:
+                    print("{} contraints added so far...".format(count))
+                    gc.collect()
+            print("{} contraints added.".format(count))
+            return None
         
         if e.is_relational():
             x,y = e.operands()
@@ -600,15 +608,18 @@ class QuantumOperator(ModuleElement):
         assert self.parent().base() == x.parent().base(), (self.parent().base(), x.parent().base())
         vs = QuantumVectorSpace(self.parent().base(), self.parent().codomain())
         return vs(self._matrix * x._vector)
-    def equations(self, dont_filter=False): # Returns a set of equations over the base field, equivalent to self==0
-        eqs = []
+    def equations(self, dont_filter=False, destructive=False):
+        """Returns system of equations over the base field, equivalent to self==0.
+
+        Returns: Generator returning all equations. Each equation is a term e, to be interpreted as e==0."""
         m = self._matrix
+        if destructive: self._matrix = None
         for i in range(m.nrows()):
             for j in range(m.ncols()):
                 x = m[i,j]
+                if destructive: m[i,j] = 0
                 if (not dont_filter) and x==0: continue
-                eqs.append(x)
-        return eqs
+                yield x
     def isHermiteanEqs(self):
         return (self-self.adjoint()).equations()
     def isPositiveSemidefiniteIneqs(self):
